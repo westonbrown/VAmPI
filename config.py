@@ -10,7 +10,9 @@ SQLALCHEMY_DATABASE_URI = 'sqlite:///' + os.path.join(vuln_app.app.root_path, 'd
 vuln_app.app.config['SQLALCHEMY_DATABASE_URI'] = SQLALCHEMY_DATABASE_URI
 vuln_app.app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-vuln_app.app.config['SECRET_KEY'] = 'random'
+# SECRET_KEY signs every auth token, so it must come from the deployment
+# environment and never from a value committed to the repository.
+vuln_app.app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or os.urandom(32)
 # start the db
 db = SQLAlchemy(vuln_app.app)
 

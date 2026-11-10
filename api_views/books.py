@@ -10,7 +10,11 @@ from app import vuln
 
 
 def get_all_books():
-    return_value = jsonify({'Books': Book.get_all_books()})
+    resp = token_validator(request.headers.get('Authorization'))
+    if "error" in resp:
+        return Response(error_message_helper(resp), 401, mimetype="application/json")
+    user = User.query.filter_by(username=resp['sub']).first()
+    return_value = jsonify({'Books': [book.json() for book in user.books]})
     return return_value
 
 
@@ -48,7 +52,8 @@ def get_by_title(book_title):
         return Response(error_message_helper(resp), 401, mimetype="application/json")
     else:
         if vuln:  # Broken Object Level Authorization
-            book = Book.query.filter_by(book_title=str(book_title)).first()
+            user = User.query.filter_by(username=resp['sub']).first()
+            book = Book.query.filter_by(user=user, book_title=str(book_title)).first()
             if book:
                 responseObject = {
                     'book_title': book.book_title,
