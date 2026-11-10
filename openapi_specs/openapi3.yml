@@ -65,6 +65,8 @@ paths:
         - users
       summary: Retrieves all users
       description: Displays all users with basic information
+      security:
+        - bearerAuth: [ ]
       operationId: api_views.users.get_all_users
       responses:
         '200':
@@ -87,6 +89,8 @@ paths:
                           example: 'name1'
   /users/v1/_debug:
     get:
+      security:
+        - bearerAuth: []
       tags:
         - users
       summary: Retrieves all details for all users
@@ -262,6 +266,8 @@ paths:
 
   /users/v1/{username}:
     get:
+      security:
+        - bearerAuth: [ ]
       tags:
         - users
       summary: Retrieves user by username
@@ -485,6 +491,8 @@ paths:
                     example: 'Invalid token. Please log in again.'
   /books/v1:
     get:
+      security:
+        - bearerAuth: [ ]
       tags:
         - books
       summary: Retrieves all books

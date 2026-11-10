@@ -1,4 +1,5 @@
 import re
+import time
 import jsonschema
 import jwt
 
@@ -7,6 +8,11 @@ from api_views.json_schemas import *
 from flask import jsonify, Response, request, json
 from models.user_model import User
 from app import vuln
+
+# In-process throttle for failed logins, keyed by client address and username.
+_login_failures = {}
+LOGIN_MAX_FAILURES = 5
+LOGIN_FAILURE_WINDOW = 60
 
 
 def error_message_helper(msg):
@@ -17,11 +23,24 @@ def error_message_helper(msg):
 
 
 def get_all_users():
+    resp = token_validator(request.headers.get('Authorization'))
+    if "error" in resp:
+        return Response(error_message_helper(resp), 401, mimetype="application/json")
+    user = User.query.filter_by(username=resp['sub']).first()
+    if not user or not user.admin:
+        return Response(error_message_helper("Only Admins may list users!"), 401, mimetype="application/json")
     return_value = jsonify({'users': User.get_all_users()})
     return return_value
 
 
 def debug():
+    resp = token_validator(request.headers.get('Authorization'))
+    if "error" in resp:
+        return Response(error_message_helper(resp), 401, mimetype="application/json")
+    user = User.query.filter_by(username=resp['sub']).first()
+    if not user or not user.admin:
+        return Response(error_message_helper("Only Admins may view all user details!"), 401,
+                        mimetype="application/json")
     return_value = jsonify({'users': User.get_all_users_debug()})
     return return_value
 
@@ -43,6 +62,13 @@ def me():
         
 
 def get_by_username(username):
+    resp = token_validator(request.headers.get('Authorization'))
+    if "error" in resp:
+        return Response(error_message_helper(resp), 401, mimetype="application/json")
+    caller = User.query.filter_by(username=resp['sub']).first()
+    if resp['sub'] != username and (caller is None or not caller.admin):
+        return Response(error_message_helper("Only Admins may view other users!"), 401,
+                        mimetype="application/json")
     if User.get_user(username):
         return Response(str(User.get_user(username)), 200, mimetype="application/json")
     else:
@@ -57,16 +83,9 @@ def register_user():
         try:
             # validate the data are in the correct form
             jsonschema.validate(request_data, register_user_schema)
-            if vuln and 'admin' in request_data:  # User is possible to define if she/he wants to be an admin !!
-                if request_data['admin']:
-                    admin = True
-                else:
-                    admin = False
-                user = User(username=request_data['username'], password=request_data['password'],
-                            email=request_data['email'], admin=admin)
-            else:
-                user = User(username=request_data['username'], password=request_data['password'],
-                            email=request_data['email'])
+            # the admin flag never comes from the request body; only seeded accounts are admins
+            user = User(username=request_data['username'], password=request_data['password'],
+                        email=request_data['email'], admin=False)
             db.session.add(user)
             db.session.commit()
 
@@ -89,8 +108,17 @@ def login_user():
         # validate the data are in the correct form
         jsonschema.validate(request_data, login_user_schema)
         # fetching user data if the user exists
-        user = User.query.filter_by(username=request_data.get('username')).first()
+        username = request_data.get('username')
+        failure_key = (request.remote_addr, username)
+        now = time.time()
+        recent_failures = [stamp for stamp in _login_failures.get(failure_key, []) if now - stamp < LOGIN_FAILURE_WINDOW]
+        if len(recent_failures) >= LOGIN_MAX_FAILURES:
+            _login_failures[failure_key] = recent_failures
+            return Response(error_message_helper("Too many failed login attempts. Try again later."), 429,
+                            mimetype="application/json")
+        user = User.query.filter_by(username=username).first()
         if user and request_data.get('password') == user.password:
+            _login_failures.pop(failure_key, None)
             auth_token = user.encode_auth_token(user.username)
             responseObject = {
                 'status': 'success',
@@ -98,16 +126,9 @@ def login_user():
                 'auth_token': auth_token
             }
             return Response(json.dumps(responseObject), 200, mimetype="application/json")
-        if vuln:  # Password Enumeration
-            if user and request_data.get('password') != user.password:
-                return Response(error_message_helper("Password is not correct for the given username."), 200,
-                                mimetype="application/json")
-            elif not user:  # User enumeration
-                return Response(error_message_helper("Username does not exist"), 200, mimetype="application/json")
-        else:
-            if (user and request_data.get('password') != user.password) or (not user):
-                return Response(error_message_helper("Username or Password Incorrect!"), 200,
-                                mimetype="application/json")
+        recent_failures.append(now)
+        _login_failures[failure_key] = recent_failures
+        return Response(error_message_helper("Username or Password Incorrect!"), 200, mimetype="application/json")
     except jsonschema.exceptions.ValidationError as exc:
         return Response(error_message_helper(exc.message), 400, mimetype="application/json")
     except:
@@ -141,9 +162,10 @@ def update_email(username):
     else:
         user = User.query.filter_by(username=resp['sub']).first()
         if vuln:  # Regex DoS
-            match = re.search(
-                r"^([0-9a-zA-Z]([-.\w]*[0-9a-zA-Z])*@{1}([0-9a-zA-Z][-\w]*[0-9a-zA-Z]\.)+[a-zA-Z]{2,9})$",
-                str(request_data.get('email')))
+            email = str(request_data.get('email'))
+            match = len(email) <= 254 and re.search(
+                r"^([0-9a-zA-Z]([-._a-zA-Z0-9]*[0-9a-zA-Z])?@{1}([0-9a-zA-Z][-a-zA-Z0-9]*[0-9a-zA-Z]\.)+[a-zA-Z]{2,9})$",
+                email)
             if match:
                 user.email = request_data.get('email')
                 db.session.commit()
@@ -184,8 +206,8 @@ def update_password(username):
     else:
         if request_data.get('password'):
             if vuln:  # Unauthorized update of password of another user
-                user = User.query.filter_by(username=username).first()
-                if user:
+                user = User.query.filter_by(username=resp['sub']).first()
+                if user and user.username == username:
                     user.password = request_data.get('password')
                     db.session.commit()
                 else:

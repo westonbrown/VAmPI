@@ -1,4 +1,5 @@
 import datetime
+import os
 import jwt
 from sqlalchemy.orm import relationship
 from config import db, vuln_app
@@ -69,8 +70,8 @@ class User(db.Model):
     @staticmethod
     def get_user(username):
         if vuln:  # SQLi Injection
-            user_query = f"SELECT * FROM users WHERE username = '{username}'"
-            query = db.session.execute(text(user_query))
+            user_query = text("SELECT * FROM users WHERE username = :username")
+            query = db.session.execute(user_query, {"username": username})
             ret = query.fetchone()
             if ret:
                 fin_query = '{"username": "%s", "email": "%s"}' % (ret[1], ret[3])
@@ -98,4 +99,6 @@ class User(db.Model):
     def init_db_users():
         User.register_user("name1", "pass1", "mail1@mail.com", False)
         User.register_user("name2", "pass2", "mail2@mail.com", False)
-        User.register_user("admin", "pass1", "admin@mail.com", True)
+        admin_password = os.getenv('VAMPI_ADMIN_PASSWORD')
+        if admin_password:
+            User.register_user("admin", admin_password, "admin@mail.com", True)
